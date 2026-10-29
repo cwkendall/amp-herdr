@@ -9,10 +9,11 @@ same way Herdr's built-in integrations do for Pi or OpenCode.
 
 ![Herdr with four Amp threads: the sidebar lists each thread as amp · title with its state, and the pane borders show the thread titles](docs/screenshot.png)
 
-*Four demo threads in the [Amp theme](#amp-theme). Each pane prints the report
-its Amp plugin sent. The sidebar lists each thread as `amp · <title>` with its
-state: working (yellow), blocked on approval (red), done (teal) until you view
-it, or idle (green). Split panes also show the title on their border.*
+*Four demo threads in the [Amp theme](#amp-theme) with Ghostty's default
+colors. Each pane prints the report its Amp plugin sent. The sidebar lists
+each thread as `amp · <title>` with its state: working (yellow), blocked on
+approval (red), or idle (green); a finished thread shows done (cyan) until you
+view it. Split panes also show the title on their border.*
 
 | | Without amp-herdr | With amp-herdr |
 | --- | --- | --- |
@@ -111,28 +112,20 @@ threads at a time; run it again for the rest.
 
 ### Amp theme
 
-To give Herdr the look of Amp's interface, add this to Herdr's `config.toml`.
-It keeps your terminal's background and uses Amp's lime accent, text, and
-error colors. It suits dark terminals.
+Amp draws most of its interface in your terminal's own colors; its green and
+yellow are the terminal's ANSI green and yellow. To match it, add this to
+Herdr's `config.toml`. It uses Herdr's `terminal` theme with Amp's green as the
+accent and the grey Amp uses for highlighted rows, and suits dark terminals; on
+a light terminal, leave out `active_row_bg`. If the file already has a
+`[theme]` table, set `name = "terminal"` there instead of adding a second one.
 
 ```toml
+[theme]
+name = "terminal"
+
 [theme.custom]
-panel_bg = "reset"
-accent = "#bfdd42"
-text = "#f6fff5"
-subtext0 = "#9ca3af"
-overlay0 = "#4b5563"
-overlay1 = "#6b7280"
-surface0 = "#1a1d1a"
-surface1 = "#262a26"
-surface_dim = "#121412"
-active_row_bg = "#1d2412"
-selection_bg = "#2b3518"
-green = "#bfdd42"
-teal = "#7fae5a"
-yellow = "#e8c547"
-red = "#f87171"
-blue = "#7aa2f7"
+accent = "green"
+active_row_bg = "#303030"
 ```
 
 ### Upgrading Herdr with a package manager
