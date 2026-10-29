@@ -2,8 +2,17 @@
   "name": "amp-herdr",
   "version": "0.1.0",
   "description": "Amp integration for Herdr: native thread resume, state, titles, and thread sync",
+  "author": "Chris Kendall <ckendall@gmail.com>",
   "private": true,
   "type": "module",
+  "bin": {
+    "amp-herdr": "bin/amp-herdr"
+  },
+  "files": [
+    "amp",
+    "bin",
+    "herdr-plugin.toml"
+  ],
   "scripts": {
     "test": "node --test",
     "preversion": "npm test",

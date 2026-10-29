@@ -1,12 +1,15 @@
 # amp-herdr
 
+[![test](https://github.com/cwkendall/amp-herdr/actions/workflows/test.yml/badge.svg)](https://github.com/cwkendall/amp-herdr/actions/workflows/test.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 [Amp](https://ampcode.com) integration for [Herdr](https://herdr.dev). Herdr
 detects Amp from its screen. amp-herdr has Amp report to Herdr directly, the
 same way Herdr's built-in integrations do for Pi or OpenCode.
 
 | | Without amp-herdr | With amp-herdr |
 | --- | --- | --- |
-| Agent state | Read from the screen | Reported by Amp: `working`, `blocked` on approvals, `idle` |
+| Agent state | Read from the screen | Reported by Amp: `working`, `blocked` on approvals and errors, `idle` |
 | Server restart | Amp panes come back as empty shells | Herdr reopens the same thread with `amp threads continue <id>` |
 | Pane title | Terminal title | Amp thread title |
 | Open a thread | Type `amp threads continue` yourself | Pick a recent thread from a popup |
@@ -24,34 +27,40 @@ It works with any Amp deployment, including self-hosted tenancies: it runs the
 
 ## Install
 
-Choose one way to install. Each sets up the Amp plugin and the Herdr plugin.
-
-### With a package manager
-
-The package puts the `amp-herdr` command on your `PATH`. Run its `install`
-command once to set up both plugins:
-
-```bash
-amp-herdr install
-```
-
-Update the package with its manager, then run `amp-herdr install` again to
-refresh the Amp plugin. The Herdr plugin links to the installed package, so it
-updates with it.
-
-### From Herdr
-
 ```bash
 herdr plugin install cwkendall/amp-herdr
 ```
 
-Herdr installs the Amp plugin and registers the Herdr plugin, but it does not
-put plugin commands on your `PATH`. Use the Herdr actions below, or install the
-package as well for the `amp-herdr` command. Update with
-`herdr plugin update amp-herdr`.
+Herdr installs the Amp plugin and registers the Herdr plugin. Restart running
+Amp sessions, or run `plugins: reload` in each, to start reporting. Check the
+result with `herdr plugin list`.
 
-After either install, restart running Amp sessions, or run `plugins: reload` in
-each, to start reporting. Check the result with `amp-herdr status`.
+Update with `herdr plugin update amp-herdr` on Herdr 0.9.4 or later. Earlier
+versions have no `plugin update`; run the install command again instead.
+
+### Command-line tool
+
+Herdr does not put plugin commands on your `PATH`. For the `amp-herdr` command,
+which `upgrade` and `status` need, install it with npm:
+
+```bash
+npm install -g github:cwkendall/amp-herdr
+```
+
+Run the same command to update it.
+
+### Uninstall
+
+Remove the Amp plugin first, because the Herdr plugin restores it whenever
+Herdr starts:
+
+```bash
+amp-herdr uninstall
+herdr plugin uninstall amp-herdr
+```
+
+Without the `amp-herdr` command, delete `~/.config/amp/plugins/amp-herdr.ts`
+(`%USERPROFILE%\.config\amp\plugins\amp-herdr.ts` on Windows) instead.
 
 ## Use
 
@@ -84,12 +93,14 @@ amp-herdr sync [--since 24h]      Open recently updated threads that are not ope
 amp-herdr upgrade [session]       Stop outdated Herdr sessions that restart safely
                   [--yes]
 amp-herdr status                  Show what is installed and what Herdr sees
+amp-herdr install                 Set up both plugins from this copy instead of Herdr
 amp-herdr uninstall               Remove both plugins
 ```
 
 `open` focuses a thread that is already open instead of opening it twice. New
 threads open as a tab in the workspace for their project directory, or in a new
-workspace.
+workspace. Each thread starts its own Amp client, so `sync` opens at most 10
+threads at a time; run it again for the rest.
 
 ### Upgrading Herdr with a package manager
 
@@ -103,12 +114,16 @@ amp-herdr upgrade
 ```
 
 It checks every running session, or the one you name. A session stops only
-when it is outdated and every pane survives the restart: an idle shell, an
-agent Herdr can resume natively, or an Amp pane reporting its thread. It lists
-anything else, such as a dev server or an Amp session started before this
-plugin was installed, and leaves that session running. It asks once before
-stopping anything and never starts a terminal; reattach with
-`herdr --session <name>`.
+when it is outdated and every pane survives the restart: an idle shell, or an
+idle agent that Herdr can resume natively or that reports its Amp thread, with
+nothing else running beside it. It lists anything else, such as a dev server,
+a suspended editor, or an Amp session started before this plugin was
+installed, and leaves that session running. It asks once before stopping
+anything and never starts a terminal; reattach with `herdr --session <name>`.
+
+Agents come back only while Herdr's `resume_agents_on_restore` setting is on,
+which is the default. Tasks an agent runs itself, such as Claude Code
+background shells, stop with it.
 
 ## How it works
 
@@ -121,7 +136,8 @@ you are viewing and reports it through Herdr's
 - `pane.report_metadata` with the thread title and an `amp_thread` token
 - `pane.release_agent` when Amp exits
 
-Outside Herdr it does nothing. Reports are queued and coalesced so a slow
+Outside Herdr it does nothing, and so does an `amp -x` that Amp starts in its
+own pane. Reports are queued and coalesced so a slow
 socket never slows Amp down.
 
 `herdr-plugin.toml` declares the Herdr plugin. Its build and startup hooks keep
@@ -150,8 +166,7 @@ git push --follow-tags
 
 `npm version` runs the tests, sets the version in `package.json` and
 `herdr-plugin.toml`, commits, and tags `vX.Y.Z`. Pushing the tag publishes a
-GitHub release with generated notes. Then update the version and checksum in
-the Homebrew formula and Scoop manifest.
+GitHub release with generated notes.
 
 `herdr plugin update` installs the newest commit of the ref the plugin was
 installed from (the default branch unless `--ref` was given) and ignores the
@@ -159,4 +174,4 @@ version. To pin a release, use `herdr plugin install cwkendall/amp-herdr --ref v
 
 ## License
 
-Apache-2.0
+Copyright 2026 Chris Kendall. Licensed under the [Apache License 2.0](LICENSE).

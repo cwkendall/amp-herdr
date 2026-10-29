@@ -9,7 +9,7 @@ platforms = ["linux", "macos", "windows"]
 [[build]]
 command = ["node", "bin/amp-herdr", "install", "--amp-only"]
 
-# Refreshes it for linked installs updated by a package manager.
+# Refreshes it whenever Herdr starts, for linked copies that change in place.
 [[startup]]
 command = ["node", "bin/amp-herdr", "install", "--amp-only"]
 
