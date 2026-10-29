@@ -7,6 +7,12 @@
 detects Amp from its screen. amp-herdr has Amp report to Herdr directly, the
 same way Herdr's built-in integrations do for Pi or OpenCode.
 
+![Herdr with four Amp threads: the sidebar shows each thread working, blocked, or idle, and the pane borders show the thread titles](docs/screenshot.png)
+
+*Four demo threads. Each pane prints the report its Amp plugin sent. Herdr
+shows the thread title on the pane border and the state in the sidebar:
+working (yellow), blocked on approval (red), or idle (green).*
+
 | | Without amp-herdr | With amp-herdr |
 | --- | --- | --- |
 | Agent state | Read from the screen | Reported by Amp: `working`, `blocked` on approvals and errors, `idle` |
