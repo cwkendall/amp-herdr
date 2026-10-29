@@ -29,8 +29,9 @@ From Herdr:
 herdr plugin install cwkendall/amp-herdr
 ```
 
-This installs the Amp plugin into `~/.config/amp/plugins/` and registers the
-Herdr plugin. `herdr plugin update` keeps both current.
+This installs the Amp plugin into `~/.config/amp/plugins/`, registers the
+Herdr plugin, and adds an `amp-herdr` launcher to `~/.local/bin` unless one is
+already on your `PATH`. `herdr plugin update` keeps all three current.
 
 From Homebrew or a checkout:
 

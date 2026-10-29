@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 
@@ -43,7 +43,8 @@ function setup(world: object) {
 	writeFileSync(join(dir, 'world.json'), JSON.stringify(world))
 	const env = {
 		...process.env,
-		PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+		PATH: `${join(dir, 'bin')}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		HOME: dir,
 		FAKE_WORLD: join(dir, 'world.json'),
 		FAKE_LOG: join(dir, 'calls.log'),
 		XDG_CONFIG_HOME: join(dir, 'config'),
@@ -194,13 +195,18 @@ test('install never overwrites an Amp plugin it does not manage, and uninstall r
 	const { dir, cli } = setup({ sessions: {}, plugins: [] })
 	const target = join(dir, 'config', 'amp', 'plugins', 'amp-herdr.ts')
 
-	const installed = cli('install')
+	const launcher = join(dir, '.local', 'bin', 'amp-herdr')
+
+	const installed = cli('install', '--amp-only')
 	assert.equal(installed.status, 0, installed.stderr)
 	assert.ok(readFileSync(target, 'utf8').includes('managed by amp-herdr'))
-	assert.ok(installed.calls.some((call) => call[2] === 'plugin' && call[3] === 'link'))
+	const version = spawnSync(launcher, ['--version'], { encoding: 'utf8' })
+	assert.equal(version.stdout.trim(), JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')).version)
+	assert.ok(cli('install').calls.some((call) => call[2] === 'plugin' && call[3] === 'link'))
 
 	assert.equal(cli('uninstall').status, 0)
 	assert.ok(!existsSync(target))
+	assert.ok(!existsSync(launcher))
 
 	writeFileSync(target, 'export default () => {}\n')
 	const refused = cli('install')
