@@ -9,6 +9,8 @@ export const description =
 
 const SOURCE = 'amp-herdr'
 const AGENT = 'amp'
+// The title labels the pane border; the display name puts it in the sidebar.
+const CLEAR_TITLE = { clear_title: true, clear_display_agent: true }
 
 // A failed turn waits for the user like an approval does, so it is not "done".
 function herdrState(state: ThreadState): { state: 'idle' | 'working' | 'blocked'; message?: string } {
@@ -85,7 +87,7 @@ export default function (amp: PluginAPI) {
 		if (threadSubscriptions.length === 0) return
 		for (const subscription of threadSubscriptions) subscription.unsubscribe()
 		threadSubscriptions = []
-		report('pane.report_metadata', { clear_title: true, tokens: { amp_thread: null } })
+		report('pane.report_metadata', { ...CLEAR_TITLE, tokens: { amp_thread: null } })
 		return report('pane.release_agent', {})
 	}
 
@@ -100,7 +102,7 @@ export default function (amp: PluginAPI) {
 			}),
 			thread.title.subscribe((title) => {
 				report('pane.report_metadata', {
-					...(title ? { title } : { clear_title: true }),
+					...(title ? { title, display_agent: `${AGENT} · ${title}` } : CLEAR_TITLE),
 					tokens: { amp_thread: active.id },
 				})
 			}),

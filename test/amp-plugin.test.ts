@@ -110,7 +110,13 @@ test('reports the active thread, follows thread switches, and releases on exit',
 		assert.equal(states[2].message, 'Approval required')
 		assert.equal(states[4].message, 'Error', 'a failed turn waits for the user')
 		assert.deepEqual(states.at(-1).resume_argv, ['amp', 'threads', 'continue', B])
-		assert.ok(sent.some((request) => request.title === 'Fix login' && request.tokens.amp_thread === A))
+		assert.ok(
+			sent.some(
+				(request) => request.title === 'Fix login' && request.display_agent === 'amp · Fix login' && request.tokens.amp_thread === A,
+			),
+		)
+		assert.ok(sent.some((request) => request.clear_display_agent && request.tokens.amp_thread === B), 'an untitled thread clears the name')
+		assert.ok(sent.some((request) => request.clear_display_agent && request.tokens.amp_thread === null), 'release clears the name')
 		assert.deepEqual(sent.at(-1), { method: 'pane.release_agent', pane_id: 'w1:p1', source: 'amp-herdr', agent: 'amp', seq: sent.at(-1).seq })
 		for (const request of sent) assert.equal(request.source, 'amp-herdr')
 		const seqs = sent.map((request) => request.seq)

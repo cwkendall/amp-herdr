@@ -7,17 +7,18 @@
 detects Amp from its screen. amp-herdr has Amp report to Herdr directly, the
 same way Herdr's built-in integrations do for Pi or OpenCode.
 
-![Herdr with four Amp threads: the sidebar shows each thread working, blocked, or idle, and the pane borders show the thread titles](docs/screenshot.png)
+![Herdr with four Amp threads: the sidebar lists each thread as amp · title with its state, and the pane borders show the thread titles](docs/screenshot.png)
 
-*Four demo threads. Each pane prints the report its Amp plugin sent. Herdr
-shows the thread title on the pane border and the state in the sidebar:
-working (yellow), blocked on approval (red), or idle (green).*
+*Four demo threads in the [Amp theme](#amp-theme). Each pane prints the report
+its Amp plugin sent. The sidebar lists each thread as `amp · <title>` with its
+state: working (yellow), blocked on approval (red), done (teal) until you view
+it, or idle (green). Split panes also show the title on their border.*
 
 | | Without amp-herdr | With amp-herdr |
 | --- | --- | --- |
 | Agent state | Read from the screen | Reported by Amp: `working`, `blocked` on approvals and errors, `idle` |
 | Server restart | Amp panes come back as empty shells | Herdr reopens the same thread with `amp threads continue <id>` |
-| Pane title | Terminal title | Amp thread title |
+| Sidebar and pane title | `amp`, and no pane title | `amp · <thread title>`, and the thread title on split pane borders |
 | Open a thread | Type `amp threads continue` yourself | Pick a recent thread from a popup |
 | Threads started elsewhere | Not in Herdr | `sync` opens recent threads in their project workspace |
 
@@ -108,6 +109,32 @@ threads open as a tab in the workspace for their project directory, or in a new
 workspace. Each thread starts its own Amp client, so `sync` opens at most 10
 threads at a time; run it again for the rest.
 
+### Amp theme
+
+To give Herdr the look of Amp's interface, add this to Herdr's `config.toml`.
+It keeps your terminal's background and uses Amp's lime accent, text, and
+error colors. It suits dark terminals.
+
+```toml
+[theme.custom]
+panel_bg = "reset"
+accent = "#bfdd42"
+text = "#f6fff5"
+subtext0 = "#9ca3af"
+overlay0 = "#4b5563"
+overlay1 = "#6b7280"
+surface0 = "#1a1d1a"
+surface1 = "#262a26"
+surface_dim = "#121412"
+active_row_bg = "#1d2412"
+selection_bg = "#2b3518"
+green = "#bfdd42"
+teal = "#7fae5a"
+yellow = "#e8c547"
+red = "#f87171"
+blue = "#7aa2f7"
+```
+
 ### Upgrading Herdr with a package manager
 
 Herdr's live handoff keeps panes running across updates, but only for its own
@@ -139,7 +166,9 @@ you are viewing and reports it through Herdr's
 
 - `pane.report_agent` with the thread state and
   `resume_argv = ["amp", "threads", "continue", "<thread-id>"]`
-- `pane.report_metadata` with the thread title and an `amp_thread` token
+- `pane.report_metadata` with the thread title, the sidebar name
+  `amp · <title>`, and an `amp_thread` token. The sidebar name takes the place
+  of a name set with `herdr agent rename`, which still works for lookups.
 - `pane.release_agent` when Amp exits
 
 Outside Herdr it does nothing, and so does an `amp -x` that Amp starts in its
