@@ -47,8 +47,10 @@ async function startHerdr() {
 	return { socketPath, requests, close: () => server.close() }
 }
 
-async function loadPlugin(socketPath: string | undefined) {
+async function loadPlugin(socketPath: string | undefined, agent?: string) {
 	Object.assign(process.env, { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1' })
+	if (agent) process.env.AGENT = agent
+	else delete process.env.AGENT
 	if (socketPath) process.env.HERDR_SOCKET_PATH = socketPath
 	else delete process.env.HERDR_SOCKET_PATH
 
@@ -89,20 +91,24 @@ test('reports the active thread, follows thread switches, and releases on exit',
 		active.emit({ id: B })
 		threads.get(A)!.state.emit('idle') // the previous thread no longer reports
 		await settle()
+		threads.get(B)!.state.emit('error')
+		await settle()
 		await dispose()
 
 		const sent = herdr.requests.map(({ method, params }) => ({ method, ...params }))
 		const states = sent.filter((request) => request.method === 'pane.report_agent')
 		assert.deepEqual(
-			states.map(({ state, agent_session_id }) => [state, agent_session_id]),
+			states.map(({ state, resume_argv }) => [state, resume_argv.at(-1)]),
 			[
 				['idle', A],
 				['working', A],
 				['blocked', A],
 				['idle', B],
+				['blocked', B],
 			],
 		)
 		assert.equal(states[2].message, 'Approval required')
+		assert.equal(states[4].message, 'Error', 'a failed turn waits for the user')
 		assert.deepEqual(states.at(-1).resume_argv, ['amp', 'threads', 'continue', B])
 		assert.ok(sent.some((request) => request.title === 'Fix login' && request.tokens.amp_thread === A))
 		assert.deepEqual(sent.at(-1), { method: 'pane.release_agent', pane_id: 'w1:p1', source: 'amp-herdr', agent: 'amp', seq: sent.at(-1).seq })
@@ -128,7 +134,16 @@ test('sends only the latest pending state when reports queue up', async () => {
 	}
 })
 
-test('does nothing outside Herdr', async () => {
-	const { active } = await loadPlugin(undefined)
-	assert.equal(active.subscribers, 0)
+test('does nothing outside Herdr, or in an amp started by another Amp in the same pane', async () => {
+	assert.equal((await loadPlugin(undefined)).active.subscribers, 0)
+	const herdr = await startHerdr()
+	try {
+		const nested = await loadPlugin(herdr.socketPath, 'amp')
+		assert.equal(nested.active.subscribers, 0)
+		await nested.dispose()
+		await settle()
+		assert.deepEqual(herdr.requests, [], 'the nested amp never releases the pane')
+	} finally {
+		herdr.close()
+	}
 })

@@ -10,10 +10,12 @@ export const description =
 const SOURCE = 'amp-herdr'
 const AGENT = 'amp'
 
-export function herdrState(state: ThreadState): 'idle' | 'working' | 'blocked' {
-	if (state === 'running') return 'working'
-	if (state === 'awaiting-approval') return 'blocked'
-	return 'idle'
+// A failed turn waits for the user like an approval does, so it is not "done".
+function herdrState(state: ThreadState): { state: 'idle' | 'working' | 'blocked'; message?: string } {
+	if (state === 'running') return { state: 'working' }
+	if (state === 'awaiting-approval') return { state: 'blocked', message: 'Approval required' }
+	if (state === 'error') return { state: 'blocked', message: 'Error' }
+	return { state: 'idle' }
 }
 
 export function resumeArgv(threadID: string): string[] {
@@ -69,6 +71,9 @@ function createReporter(endpoint: string, paneID: string) {
 export default function (amp: PluginAPI) {
 	const { HERDR_ENV, HERDR_SOCKET_PATH, HERDR_PANE_ID } = process.env
 	if (HERDR_ENV !== '1' || !HERDR_SOCKET_PATH || !HERDR_PANE_ID) return
+	// Amp's tool shells set AGENT=amp. An `amp -x` started from one inherits the
+	// pane, and must not replace or release the report of the Amp that owns it.
+	if (process.env.AGENT === 'amp') return
 
 	const endpoint =
 		process.platform === 'win32' ? `\\\\.\\pipe\\${HERDR_SOCKET_PATH}` : HERDR_SOCKET_PATH
@@ -77,6 +82,7 @@ export default function (amp: PluginAPI) {
 
 	// Herdr drops the resume command and title only when the pane is released.
 	function release() {
+		if (threadSubscriptions.length === 0) return
 		for (const subscription of threadSubscriptions) subscription.unsubscribe()
 		threadSubscriptions = []
 		report('pane.report_metadata', { clear_title: true, tokens: { amp_thread: null } })
@@ -84,21 +90,13 @@ export default function (amp: PluginAPI) {
 	}
 
 	amp.activeThread.subscribe((active) => {
-		if (!active) {
-			if (threadSubscriptions.length > 0) void release()
-			return
-		}
+		if (!active) return void release()
 		for (const subscription of threadSubscriptions) subscription.unsubscribe()
 
 		const thread = amp.threads.get(active.id)
 		threadSubscriptions = [
 			thread.state.subscribe((state) => {
-				report('pane.report_agent', {
-					state: herdrState(state),
-					message: state === 'awaiting-approval' ? 'Approval required' : undefined,
-					agent_session_id: active.id,
-					resume_argv: resumeArgv(active.id),
-				})
+				report('pane.report_agent', { ...herdrState(state), resume_argv: resumeArgv(active.id) })
 			}),
 			thread.title.subscribe((title) => {
 				report('pane.report_metadata', {
