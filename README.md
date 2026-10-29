@@ -114,10 +114,11 @@ threads at a time; run it again for the rest.
 
 Amp draws most of its interface in your terminal's own colors; its green and
 yellow are the terminal's ANSI green and yellow. To match it, add this to
-Herdr's `config.toml`. It uses Herdr's `terminal` theme with Amp's green as the
-accent and the grey Amp uses for highlighted rows, and suits dark terminals; on
-a light terminal, leave out `active_row_bg`. If the file already has a
-`[theme]` table, set `name = "terminal"` there instead of adding a second one.
+Herdr's `config.toml`. Herdr's `terminal` theme draws from the same palette,
+and the accent turns Herdr's focus colors (the active tab, the focused pane's
+border, and popups) from ANSI blue to Amp's green. If the file already has
+`[theme]` or `[theme.custom]` tables, set these keys in them instead of adding
+new ones.
 
 ```toml
 [theme]
@@ -125,7 +126,6 @@ name = "terminal"
 
 [theme.custom]
 accent = "green"
-active_row_bg = "#303030"
 ```
 
 ### Upgrading Herdr with a package manager
