@@ -1,0 +1,355 @@
+#!/usr/bin/env node
+// amp-herdr: installs the Amp ↔ Herdr integration, opens and syncs Amp threads
+// in Herdr, and restarts outdated Herdr sessions without losing Amp threads.
+
+import { spawnSync } from 'node:child_process'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
+import { createInterface } from 'node:readline/promises'
+import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
+
+// Homebrew sets AMP_HERDR_ROOT to its stable opt path so links survive upgrades.
+const ROOT = process.env.AMP_HERDR_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const { version: VERSION } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+const PLUGIN_ID = 'amp-herdr'
+const AMP_PLUGIN = join(ROOT, 'amp', 'amp-herdr.ts')
+const AMP_PLUGIN_TARGET = join(
+	process.env.XDG_CONFIG_HOME || join(homedir(), '.config'),
+	'amp',
+	'plugins',
+	'amp-herdr.ts',
+)
+const MANAGED_MARKER = '// managed by amp-herdr'
+const THREAD_ID = /^T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const USAGE = `Usage: amp-herdr <command> [options]
+
+Commands:
+  install [--amp-only]          Install the Amp plugin and link the Herdr plugin
+  uninstall                     Remove both plugins
+  status                        Show what is installed and which panes report Amp threads
+  open [thread-id]              Open an Amp thread in Herdr, or pick one from recent threads
+  sync [--since 24h] [--dry-run]  Open recently updated Amp threads that are not open yet
+  upgrade [session] [--yes]     Stop outdated Herdr sessions that can be restored safely
+
+Options:
+  --session <name>              Herdr session for open and sync (default: current)
+  -h, --help                    Show this help
+  -v, --version                 Show the version`
+
+function fail(message) {
+	console.error(`amp-herdr: ${message}`)
+	notify('Amp', message)
+	process.exit(1)
+}
+
+function run(command, args) {
+	const result = spawnSync(command, args, { encoding: 'utf8' })
+	if (result.error) fail(`cannot run ${command}: ${result.error.message}`)
+	if (result.status !== 0) {
+		const output = (result.stderr || result.stdout).trim()
+		let message = output
+		try {
+			message = JSON.parse(output).error?.message ?? output
+		} catch {}
+		fail(message || `${command} ${args.join(' ')} exited with ${result.status}`)
+	}
+	return result.stdout
+}
+
+function herdr(session, ...args) {
+	const output = run(process.env.HERDR_BIN_PATH || 'herdr', [
+		...(session ? ['--session', session] : []),
+		...args,
+	])
+	if (!output.trim()) return undefined
+	const json = JSON.parse(output)
+	return json.result ?? json
+}
+
+// Plugin actions run without a terminal, so they report through Herdr instead.
+function notify(title, body) {
+	if (!process.env.HERDR_PLUGIN_ID) return
+	spawnSync(process.env.HERDR_BIN_PATH || 'herdr', ['notification', 'show', title, '--body', body])
+}
+
+function threadCwd(thread) {
+	if (!thread.tree?.startsWith('file:')) return undefined
+	const cwd = fileURLToPath(thread.tree)
+	return existsSync(cwd) ? cwd : undefined
+}
+
+function recentThreads(limit) {
+	return JSON.parse(run('amp', ['threads', 'list', '--json', '--limit', String(limit)]))
+}
+
+function threadByID(id) {
+	if (!THREAD_ID.test(id)) fail(`not an Amp thread ID: ${id}`)
+	const thread = JSON.parse(run('amp', ['threads', 'export', id]))
+	return { id, title: thread.title, tree: thread.env?.initial?.trees?.[0]?.uri }
+}
+
+// Panes running the Amp plugin carry their thread in the amp_thread token.
+// Herdr keeps tokens after a crash, so trust one only while Amp is running.
+function ampThread(pane) {
+	return pane.agent === 'amp' ? pane.tokens?.amp_thread : undefined
+}
+
+function sessionIndex(session) {
+	const threads = new Map()
+	const workspaces = new Map()
+	for (const pane of herdr(session, 'pane', 'list').panes) {
+		if (ampThread(pane)) threads.set(ampThread(pane), pane.pane_id)
+		if (pane.cwd && !workspaces.has(pane.cwd)) workspaces.set(pane.cwd, pane.workspace_id)
+	}
+	return { threads, workspaces }
+}
+
+function openThread(session, index, thread, { focus, cwd = threadCwd(thread) }) {
+	if (!THREAD_ID.test(thread.id)) fail(`not an Amp thread ID: ${thread.id}`)
+	const existing = index.threads.get(thread.id)
+	if (existing) {
+		if (focus) herdr(session, 'agent', 'focus', existing)
+		return false
+	}
+	const focusFlag = focus ? '--focus' : '--no-focus'
+	const label = (thread.title || thread.id).slice(0, 80)
+	let paneID
+	const workspaceID = index.workspaces.get(cwd)
+	if (workspaceID) {
+		paneID = herdr(session, 'tab', 'create', '--workspace', workspaceID, '--cwd', cwd, '--label', label, focusFlag)
+			.root_pane.pane_id
+	} else {
+		const created = herdr(session, 'workspace', 'create', '--cwd', cwd, '--label', basename(cwd), focusFlag)
+		herdr(session, 'tab', 'rename', created.tab.tab_id, label)
+		index.workspaces.set(cwd, created.workspace.workspace_id)
+		paneID = created.root_pane.pane_id
+	}
+	herdr(session, 'pane', 'run', paneID, `amp threads continue ${thread.id}`)
+	index.threads.set(thread.id, paneID)
+	return true
+}
+
+function ago(timestamp) {
+	const minutes = Math.max(0, Math.round((Date.now() - Date.parse(timestamp)) / 60000))
+	if (minutes < 60) return `${minutes}m`
+	if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`
+	return `${Math.round(minutes / 1440)}d`
+}
+
+async function pickThread(session) {
+	const index = sessionIndex(session)
+	const threads = recentThreads(Math.max(5, (process.stdout.rows || 24) - 3))
+	threads.forEach((thread, i) => {
+		const project = threadCwd(thread) ? basename(threadCwd(thread)) : '-'
+		const open = index.threads.has(thread.id) ? '●' : ' '
+		console.log(`${String(i + 1).padStart(2)} ${open} ${thread.title || thread.id}  \x1b[2m${project} · ${ago(thread.updated)}\x1b[0m`)
+	})
+	const prompt = createInterface({ input: process.stdin, output: process.stdout })
+	const answer = (await prompt.question('\nOpen thread (number, Enter to cancel): ')).trim()
+	prompt.close()
+	const thread = threads[Number(answer) - 1]
+	if (thread) openThread(session, index, thread, { focus: true, cwd: threadCwd(thread) ?? homedir() })
+}
+
+async function open(session, id) {
+	if (id) {
+		const thread = threadByID(id)
+		openThread(session, sessionIndex(session), thread, { focus: true, cwd: threadCwd(thread) ?? homedir() })
+	} else if (process.stdin.isTTY) {
+		await pickThread(session)
+	} else if (process.env.HERDR_PLUGIN_ID) {
+		herdr(session, 'plugin', 'pane', 'open', '--plugin', PLUGIN_ID, '--entrypoint', 'picker')
+	} else {
+		fail('open needs a thread ID or a terminal')
+	}
+}
+
+function parseDuration(value) {
+	const match = /^(\d+)([mhd])$/.exec(value)
+	if (!match) fail(`invalid duration ${value}; use a number followed by m, h, or d`)
+	return Number(match[1]) * { m: 60000, h: 3600000, d: 86400000 }[match[2]]
+}
+
+function sync(session, since, dryRun) {
+	const cutoff = Date.now() - parseDuration(since)
+	const index = sessionIndex(session)
+	const candidates = recentThreads(200).filter(
+		(thread) => Date.parse(thread.updated) >= cutoff && !index.threads.has(thread.id),
+	)
+	let opened = 0
+	let skipped = 0
+	for (const thread of candidates) {
+		if (!threadCwd(thread)) {
+			skipped++
+			continue
+		}
+		console.log(`${dryRun ? 'Would open' : 'Opening'} ${thread.title || thread.id} (${threadCwd(thread)})`)
+		if (!dryRun) openThread(session, index, thread, { focus: false })
+		opened++
+	}
+	const summary = `${dryRun ? 'Would open' : 'Opened'} ${opened} thread(s) updated in the last ${since}; ${index.threads.size - (dryRun ? 0 : opened)} already open${skipped ? `; ${skipped} skipped without a local directory` : ''}.`
+	console.log(summary)
+	notify('Amp threads synced', summary)
+}
+
+function installAmpPlugin() {
+	if (existsSync(AMP_PLUGIN_TARGET)) {
+		const current = readFileSync(AMP_PLUGIN_TARGET, 'utf8')
+		if (!current.includes(MANAGED_MARKER)) fail(`${AMP_PLUGIN_TARGET} exists and is not managed by amp-herdr`)
+		if (current === readFileSync(AMP_PLUGIN, 'utf8')) return false
+	}
+	mkdirSync(dirname(AMP_PLUGIN_TARGET), { recursive: true })
+	copyFileSync(AMP_PLUGIN, AMP_PLUGIN_TARGET)
+	return true
+}
+
+function herdrPlugin() {
+	return herdr(undefined, 'plugin', 'list', '--json').plugins.find((plugin) => plugin.plugin_id === PLUGIN_ID)
+}
+
+function install(ampOnly) {
+	const changed = installAmpPlugin()
+	if (ampOnly) {
+		if (changed) console.log(`Updated ${AMP_PLUGIN_TARGET}`)
+		return
+	}
+	console.log(`Amp plugin: ${AMP_PLUGIN_TARGET}`)
+	if (herdrPlugin()?.source?.kind !== 'github') {
+		herdr(undefined, 'plugin', 'link', ROOT)
+		console.log(`Herdr plugin: linked ${ROOT}`)
+	}
+	console.log('Running Amp sessions pick up the plugin after "plugins: reload" or a restart.')
+}
+
+function uninstall() {
+	if (existsSync(AMP_PLUGIN_TARGET) && readFileSync(AMP_PLUGIN_TARGET, 'utf8').includes(MANAGED_MARKER)) {
+		rmSync(AMP_PLUGIN_TARGET)
+		console.log(`Removed ${AMP_PLUGIN_TARGET}`)
+	}
+	const plugin = herdrPlugin()
+	if (plugin?.source?.kind === 'local') {
+		herdr(undefined, 'plugin', 'unlink', PLUGIN_ID)
+		console.log('Unlinked the Herdr plugin.')
+	} else if (plugin) {
+		console.log(`Remove the Herdr plugin with: herdr plugin uninstall ${PLUGIN_ID}`)
+	}
+}
+
+function runningSessions() {
+	return herdr(undefined, 'session', 'list', '--json').sessions.filter((session) => session.running)
+}
+
+function status() {
+	const installed = existsSync(AMP_PLUGIN_TARGET)
+	const current = installed && readFileSync(AMP_PLUGIN_TARGET, 'utf8') === readFileSync(AMP_PLUGIN, 'utf8')
+	const plugin = herdrPlugin()
+	console.log(`amp-herdr ${VERSION}`)
+	console.log(`Amp plugin:   ${installed ? (current ? 'installed' : 'outdated') : 'missing'} (${AMP_PLUGIN_TARGET})`)
+	console.log(
+		`Herdr plugin: ${plugin ? `${plugin.source?.kind ?? 'local'}${plugin.enabled ? '' : ', disabled'} (${plugin.plugin_root})` : 'missing'}`,
+	)
+	for (const session of runningSessions()) {
+		const panes = herdr(session.name, 'pane', 'list').panes
+		const amp = panes.filter((pane) => pane.agent === 'amp')
+		const reporting = amp.filter(ampThread)
+		console.log(`Session ${session.name}: ${amp.length} Amp pane(s), ${reporting.length} reporting a resumable thread`)
+	}
+}
+
+function hasChildProcess(pid) {
+	return spawnSync('pgrep', ['-P', String(pid)]).status === 0
+}
+
+// Stopping a session kills every process in its panes, including suspended and
+// background jobs. A pane survives only when it is an idle shell, or an idle
+// agent that Herdr resumes natively or through an Amp thread report.
+function blockers(session) {
+	const reasons = []
+	for (const pane of herdr(session, 'pane', 'list').panes) {
+		const where = `${pane.pane_id} (${pane.cwd ?? 'unknown directory'})`
+		const resumable = pane.agent_session || ampThread(pane)
+		if (resumable) {
+			if (!['idle', 'done'].includes(pane.agent_status)) reasons.push(`${where}: ${pane.agent} is ${pane.agent_status}`)
+			continue
+		}
+		const info = herdr(session, 'pane', 'process-info', '--pane', pane.pane_id).process_info
+		if (!info.shell_pid) continue // the pane's process has already exited
+		if (info.foreground_process_group_id === info.shell_pid && !hasChildProcess(info.shell_pid)) continue
+		const names = [...new Set(info.foreground_processes.map((process) => process.name))].join(', ')
+		reasons.push(`${where} is running ${names || 'a job Herdr cannot inspect'}`)
+	}
+	return reasons
+}
+
+async function upgrade(name, yes) {
+	const sessions = runningSessions().filter((session) => !name || session.name === name)
+	if (name && sessions.length === 0) fail(`Herdr session ${name} is not running`)
+	const installed = herdr(undefined, 'status', 'client', '--json').version
+	const plan = []
+	let blocked = false
+	for (const session of sessions) {
+		const server = herdr(session.name, 'status', 'server', '--json')
+		if (!server.restart_needed && !server.server_binary_stale && server.version === installed) {
+			console.log(`Session ${session.name} is current (${server.version}).`)
+			continue
+		}
+		const reasons =
+			process.env.HERDR_SOCKET_PATH === session.socket_path
+				? ['this command is running inside it; run it from another terminal']
+				: blockers(session.name)
+		if (reasons.length) {
+			blocked = true
+			console.log(`Session ${session.name} (${server.version}) cannot restart safely:`)
+			for (const reason of reasons) console.log(`  ${reason}`)
+			continue
+		}
+		console.log(`Session ${session.name} will restart from ${server.version} to ${installed}.`)
+		plan.push(session.name)
+	}
+	if (plan.length === 0) process.exit(blocked ? 1 : 0)
+	if (!yes) {
+		if (!process.stdin.isTTY) fail('rerun with --yes to stop these sessions')
+		const prompt = createInterface({ input: process.stdin, output: process.stdout })
+		const answer = (await prompt.question(`Stop ${plan.length} session(s)? [y/N] `)).trim()
+		prompt.close()
+		if (!/^y(es)?$/i.test(answer)) return console.log('Cancelled.')
+	}
+	for (const session of plan) {
+		const reasons = blockers(session) // panes may have changed while the prompt was open
+		if (reasons.length) {
+			blocked = true
+			console.log(`Session ${session} changed and cannot restart safely:\n  ${reasons.join('\n  ')}`)
+			continue
+		}
+		herdr(undefined, 'session', 'stop', session, '--json')
+		console.log(`Stopped ${session}. Reattach with: herdr${session === 'default' ? '' : ` --session ${session}`}`)
+	}
+	if (blocked) process.exit(1)
+}
+
+const { values, positionals } = parseArgs({
+	allowPositionals: true,
+	options: {
+		session: { type: 'string' },
+		since: { type: 'string', default: '24h' },
+		'dry-run': { type: 'boolean' },
+		'amp-only': { type: 'boolean' },
+		yes: { type: 'boolean' },
+		help: { type: 'boolean', short: 'h' },
+		version: { type: 'boolean', short: 'v' },
+	},
+})
+const [command, argument] = positionals
+
+if (values.version) console.log(VERSION)
+else if (values.help || !command) console.log(USAGE)
+else if (command === 'install') install(values['amp-only'])
+else if (command === 'uninstall') uninstall()
+else if (command === 'status') status()
+else if (command === 'open') await open(values.session, argument)
+else if (command === 'sync') sync(values.session, values.since, values['dry-run'])
+else if (command === 'upgrade') await upgrade(argument, values.yes)
+else fail(`unknown command: ${command}\n\n${USAGE}`)

@@ -1,0 +1,34 @@
+id = "amp-herdr"
+name = "Amp"
+version = "0.1.0"
+min_herdr_version = "0.9.2"
+description = "Resume, open, and sync Amp threads in Herdr"
+platforms = ["linux", "macos"]
+
+# Installs or refreshes the Amp plugin on `herdr plugin install` and `update`.
+[[build]]
+command = ["node", "bin/amp-herdr", "install", "--amp-only"]
+
+# Refreshes it for linked installs updated by a package manager.
+[[startup]]
+command = ["node", "bin/amp-herdr", "install", "--amp-only"]
+
+[[actions]]
+id = "open"
+title = "Open Amp thread"
+contexts = ["global"]
+command = ["node", "bin/amp-herdr", "open"]
+
+[[actions]]
+id = "sync"
+title = "Sync recent Amp threads"
+contexts = ["global"]
+command = ["node", "bin/amp-herdr", "sync"]
+
+[[panes]]
+id = "picker"
+title = "Open Amp thread"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["node", "bin/amp-herdr", "open"]

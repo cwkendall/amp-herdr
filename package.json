@@ -1,0 +1,15 @@
+{
+  "name": "amp-herdr",
+  "version": "0.1.0",
+  "description": "Amp integration for Herdr: native thread resume, state, titles, and thread sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "repository": "github:cwkendall/amp-herdr",
+  "license": "Apache-2.0"
+}
