@@ -33,7 +33,10 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify([tool, session, ...args])
 const out = (result) => process.stdout.write(JSON.stringify(tool === 'amp' ? result : { result }))
 const s = world.sessions?.[session]
 const key = args.slice(0, 2).join(' ')
-if (tool === 'pgrep') process.exit((world.childrenOf ?? []).includes(Number(args[1])) ? 0 : 1)
+if (tool === 'ps') {
+	for (const [ppid, kids] of Object.entries(world.children ?? {})) for (const [pid, name] of kids) console.log(pid + ' ' + ppid + ' /usr/bin/' + name)
+	process.exit(0)
+}
 if (tool === 'amp') out(key === 'threads list' ? world.threads : world.exports[args[2]])
 else if (key === 'session list') out({ sessions: Object.entries(world.sessions).map(([name, v]) => ({ name, running: v.running, socket_path: '/sock/' + name })) })
 else if (key === 'status client') out({ version: world.version })
@@ -49,7 +52,7 @@ else out({ ok: true })
 function setup(world: object) {
 	const dir = mkdtempSync(join(tmpdir(), 'amp-herdr-cli-'))
 	mkdirSync(join(dir, 'bin'))
-	for (const tool of ['herdr', 'amp', 'pgrep']) {
+	for (const tool of ['herdr', 'amp', 'ps']) {
 		writeFileSync(join(dir, 'bin', tool), FAKE)
 		chmodSync(join(dir, 'bin', tool), 0o755)
 	}
@@ -75,14 +78,19 @@ function setup(world: object) {
 	return { dir, cli }
 }
 
-const shell = (pid: number) => ({ foreground_process_group_id: pid, shell_pid: pid, foreground_processes: [{ name: 'zsh' }] })
-const busy = { foreground_process_group_id: 20, shell_pid: 11, foreground_processes: [{ name: 'zsh' }, { name: 'node' }] }
-const amp = { foreground_process_group_id: 30, shell_pid: 12, foreground_processes: [{ name: 'amp' }] }
+const shell = (pid: number) => ({ foreground_process_group_id: pid, shell_pid: pid, foreground_processes: [{ pid, name: '-zsh' }] })
+const node = { foreground_process_group_id: 20, shell_pid: 11, foreground_processes: [{ pid: 20, name: 'node' }] }
+const amp = (shellPid: number, ampPid: number) => ({
+	foreground_process_group_id: ampPid,
+	shell_pid: shellPid,
+	foreground_processes: [{ pid: ampPid, name: 'amp' }],
+})
 
 function upgradeWorld() {
 	return {
 		version: '0.9.5',
-		childrenOf: [13], // shell 13 has a suspended or background job
+		// Shell 13 has a suspended vim; shell 15 runs amp in front of a background npm.
+		children: { 11: [[20, 'node']], 12: [[30, 'amp']], 13: [[50, 'vim']], 15: [[31, 'amp'], [40, 'npm']] },
 		sessions: {
 			current: { running: true, version: '0.9.5', panes: [], processes: {} },
 			safe: {
@@ -94,7 +102,7 @@ function upgradeWorld() {
 					{ pane_id: 'w1:p3', cwd: '/b', agent: 'claude', agent_status: 'done', agent_session: { value: 'x' } },
 					{ pane_id: 'w1:p4', cwd: '/c' },
 				],
-				processes: { 'w1:p1': shell(10), 'w1:p2': amp, 'w1:p3': busy, 'w1:p4': { foreground_processes: [] } },
+				processes: { 'w1:p1': shell(10), 'w1:p2': amp(12, 30), 'w1:p3': node, 'w1:p4': {} },
 			},
 			busy: {
 				running: true,
@@ -106,13 +114,17 @@ function upgradeWorld() {
 					{ pane_id: 'w1:p4', cwd: '/crashed', agent_status: 'idle', tokens: { amp_thread: 'T-2' } },
 					{ pane_id: 'w1:p5', cwd: '/turn', agent: 'amp', agent_status: 'working', tokens: { amp_thread: 'T-3' } },
 					{ pane_id: 'w1:p6', cwd: '/unknown' },
+					{ pane_id: 'w1:p7', cwd: '/editor' },
+					{ pane_id: 'w1:p8', cwd: '/dev', agent: 'amp', agent_status: 'idle', tokens: { amp_thread: 'T-4' } },
 				],
 				processes: {
-					'w1:p1': busy,
-					'w1:p2': amp,
+					'w1:p1': node,
+					'w1:p2': amp(12, 30),
 					'w1:p3': shell(13),
-					'w1:p4': busy,
-					'w1:p6': { shell_pid: 14, foreground_processes: [] },
+					'w1:p4': node,
+					'w1:p6': { shell_pid: 14 }, // Herdr omits foreground_processes it cannot read
+					'w1:p7': { foreground_process_group_id: 16, shell_pid: 16, foreground_processes: [{ pid: 16, name: 'vim' }] },
+					'w1:p8': amp(15, 31),
 				},
 			},
 			stopped: { running: false },
@@ -129,12 +141,14 @@ test('upgrade stops only outdated sessions whose panes all survive a restart', (
 	assert.deepEqual(stops(result.calls), ['safe'])
 	assert.match(result.stdout, /current is current/)
 	assert.match(result.stdout, /busy \(0\.9\.4\) cannot restart safely/)
-	assert.match(result.stdout, /w1:p1 \(\/srv\) is running zsh, node/)
+	assert.match(result.stdout, /w1:p1 \(\/srv\) is running node/)
 	assert.match(result.stdout, /w1:p2 \(\/old\) is running amp/, 'Amp without a reported thread is not resumable')
-	assert.match(result.stdout, /w1:p3 \(\/bg\) is running zsh/, 'a background or suspended job blocks')
-	assert.match(result.stdout, /w1:p4 \(\/crashed\) is running zsh, node/, 'a token left by an exited Amp is ignored')
+	assert.match(result.stdout, /w1:p3 \(\/bg\) is running -zsh, vim/, 'a background or suspended job blocks')
+	assert.match(result.stdout, /w1:p4 \(\/crashed\) is running node/, 'a token left by an exited Amp is ignored')
 	assert.match(result.stdout, /w1:p5 \(\/turn\): amp is working/, 'an agent mid-turn blocks')
 	assert.match(result.stdout, /w1:p6 \(\/unknown\) is running a job Herdr cannot inspect/)
+	assert.match(result.stdout, /w1:p7 \(\/editor\) is running vim/, 'a command pane is not a shell')
+	assert.match(result.stdout, /w1:p8 \(\/dev\) is running amp, npm/, 'a job beside an idle agent blocks')
 })
 
 test('upgrade honours a session name and asks before stopping', () => {
@@ -166,6 +180,7 @@ test('sync opens recent threads that are not open, reusing workspaces by directo
 				running: true,
 				panes: [
 					{ pane_id: 'w1:p1', workspace_id: 'w1', cwd: project, agent: 'amp', tokens: { amp_thread: tid('T-open') } },
+					{ pane_id: 'w1:p2', workspace_id: 'w1', cwd: project, agent: 'amp', tokens: { amp_thread: tid('T-old') } },
 				],
 			},
 		},
@@ -200,7 +215,33 @@ test('sync opens recent threads that are not open, reusing workspaces by directo
 	assert.ok(calls.some((call) => call[2] === 'tab' && call[3] === 'create' && call.includes('w1')), 'same directory opens a tab')
 	assert.ok(calls.some((call) => call[2] === 'workspace' && call.includes(other)), 'new directory opens a workspace')
 	assert.ok(calls.every((call) => !call.includes('--focus')), 'sync never steals focus')
-	assert.match(stdout, /Opened 2 thread\(s\).*1 already open; 2 skipped/)
+	assert.match(stdout, /Opened 2 thread\(s\).*; 1 already open; 2 skipped/, 'an open thread outside the window is not counted')
+})
+
+test('open starts a thread from a multi-megabyte export, and focuses one that is already open', () => {
+	const project = mkdtempSync(join(tmpdir(), 'project-'))
+	const big = 'T-00000000-0000-0000-0000-0000000000aa'
+	const open = 'T-00000000-0000-0000-0000-0000000000bb'
+	const { cli } = setup({
+		sessions: {
+			default: {
+				running: true,
+				panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', cwd: project, agent: 'amp', tokens: { amp_thread: open } }],
+			},
+		},
+		exports: {
+			[big]: { title: 'Big', env: { initial: { trees: [{ uri: pathToFileURL(project).href }] } }, messages: 'x'.repeat(3e6) },
+		},
+	})
+
+	const opened = cli('open', big)
+	assert.equal(opened.status, 0, opened.stderr)
+	const runs = opened.calls.filter((call) => call[3] === 'run').map((call) => call.slice(4))
+	assert.deepEqual(runs, [['w1:pNEW', `amp threads continue ${big}`]])
+
+	const focused = cli('open', open)
+	assert.ok(focused.calls.some((call) => call[2] === 'agent' && call[3] === 'focus' && call[4] === 'w1:p1'))
+	assert.ok(!focused.calls.some((call) => call[3] === 'run'), 'an open thread is not opened twice')
 })
 
 test('install never overwrites an Amp plugin it does not manage, and uninstall removes only its own', () => {
@@ -221,4 +262,9 @@ test('install never overwrites an Amp plugin it does not manage, and uninstall r
 	assert.match(refused.stderr, /not managed by amp-herdr/)
 	cli('uninstall')
 	assert.ok(existsSync(target), 'uninstall leaves unmanaged files alone')
+
+	const managed = setup({ sessions: {}, plugins: [{ plugin_id: 'amp-herdr', plugin_root: '/x', source: { kind: 'github' } }] })
+	const skipped = managed.cli('install')
+	assert.match(skipped.stdout, /Herdr already manages amp-herdr/)
+	assert.ok(!existsSync(join(managed.dir, 'config', 'amp', 'plugins', 'amp-herdr.ts')), 'a second copy would fight the first')
 })

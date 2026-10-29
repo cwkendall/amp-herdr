@@ -3,15 +3,14 @@
 // in Herdr, and restarts outdated Herdr sessions without losing Amp threads.
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-// Homebrew sets AMP_HERDR_ROOT to its stable opt path so links survive upgrades.
-const ROOT = process.env.AMP_HERDR_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
 const { version: VERSION } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const PLUGIN_ID = 'amp-herdr'
 const AMP_PLUGIN = join(ROOT, 'amp', 'amp-herdr.ts')
@@ -22,6 +21,7 @@ const AMP_PLUGIN_TARGET = join(
 	'amp-herdr.ts',
 )
 const MANAGED_MARKER = '// managed by amp-herdr'
+const SYNC_LIMIT = 10
 const THREAD_ID = /^T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const USAGE = `Usage: amp-herdr <command> [options]
@@ -46,11 +46,14 @@ function fail(message) {
 }
 
 function run(command, args) {
-	// On Windows, amp is a .cmd shim, which Node runs only through a shell; herdr
-	// is a real executable. Amp only ever receives fixed flags, numbers, and
-	// validated thread IDs, so nothing here needs shell quoting.
+	// On Windows, amp is a .cmd shim, which Node runs only through a shell and as
+	// one command string; herdr is a real executable. Amp only ever receives fixed
+	// flags, numbers, and validated thread IDs, so nothing needs shell quoting.
+	// Thread exports can be many megabytes, well over spawnSync's 1 MB default.
 	const shell = process.platform === 'win32' && command === 'amp'
-	const result = spawnSync(command, args, { encoding: 'utf8', shell })
+	const result = shell
+		? spawnSync([command, ...args].join(' '), { encoding: 'utf8', shell, maxBuffer: Infinity })
+		: spawnSync(command, args, { encoding: 'utf8', maxBuffer: Infinity })
 	if (result.error) fail(`cannot run ${command}: ${result.error.message}`)
 	if (result.status !== 0) {
 		const output = (result.stderr || result.stdout).trim()
@@ -76,13 +79,16 @@ function herdr(session, ...args) {
 // Plugin actions run without a terminal, so they report through Herdr instead.
 function notify(title, body) {
 	if (!process.env.HERDR_PLUGIN_ID) return
-	spawnSync(process.env.HERDR_BIN_PATH, ['notification', 'show', title, '--body', body])
+	spawnSync(process.env.HERDR_BIN_PATH || 'herdr', ['notification', 'show', title, '--body', body])
 }
 
 function threadCwd(thread) {
-	if (!thread.tree?.startsWith('file:')) return undefined
-	const cwd = fileURLToPath(thread.tree)
-	return existsSync(cwd) ? cwd : undefined
+	try {
+		const cwd = fileURLToPath(thread.tree)
+		return existsSync(cwd) ? cwd : undefined
+	} catch {
+		return undefined // no tree, not a file URL, or a path from another OS
+	}
 }
 
 function recentThreads(limit) {
@@ -111,7 +117,8 @@ function sessionIndex(session) {
 	return { threads, workspaces }
 }
 
-function openThread(session, index, thread, { focus, cwd = threadCwd(thread) }) {
+function openThread(session, index, thread, { focus }) {
+	const cwd = threadCwd(thread) ?? homedir()
 	if (!THREAD_ID.test(thread.id)) fail(`not an Amp thread ID: ${thread.id}`)
 	const existing = index.threads.get(thread.id)
 	if (existing) {
@@ -155,13 +162,13 @@ async function pickThread(session) {
 	const answer = (await prompt.question('\nOpen thread (number, Enter to cancel): ')).trim()
 	prompt.close()
 	const thread = threads[Number(answer) - 1]
-	if (thread) openThread(session, index, thread, { focus: true, cwd: threadCwd(thread) ?? homedir() })
+	if (thread) openThread(session, index, thread, { focus: true })
 }
 
 async function open(session, id) {
 	if (id) {
-		const thread = threadByID(id)
-		openThread(session, sessionIndex(session), thread, { focus: true, cwd: threadCwd(thread) ?? homedir() })
+		const index = sessionIndex(session)
+		openThread(session, index, index.threads.has(id) ? { id } : threadByID(id), { focus: true })
 	} else if (process.stdin.isTTY) {
 		await pickThread(session)
 	} else if (process.env.HERDR_PLUGIN_ID) {
@@ -180,21 +187,26 @@ function parseDuration(value) {
 function sync(session, since, dryRun) {
 	const cutoff = Date.now() - parseDuration(since)
 	const index = sessionIndex(session)
-	const candidates = recentThreads(200).filter(
-		(thread) => Date.parse(thread.updated) >= cutoff && !index.threads.has(thread.id),
-	)
-	let opened = 0
-	let skipped = 0
-	for (const thread of candidates) {
-		if (!threadCwd(thread)) {
-			skipped++
-			continue
-		}
+	const recent = recentThreads(200).filter((thread) => Date.parse(thread.updated) >= cutoff)
+	const candidates = recent.filter((thread) => !index.threads.has(thread.id))
+	const openable = candidates.filter(threadCwd)
+	// Each thread starts a full Amp client, so one sync opens at most a few; the
+	// next sync opens the rest.
+	const batch = openable.slice(0, SYNC_LIMIT)
+	for (const thread of batch) {
 		console.log(`${dryRun ? 'Would open' : 'Opening'} ${thread.title || thread.id} (${threadCwd(thread)})`)
 		if (!dryRun) openThread(session, index, thread, { focus: false })
-		opened++
 	}
-	const summary = `${dryRun ? 'Would open' : 'Opened'} ${opened} thread(s) updated in the last ${since}; ${index.threads.size - (dryRun ? 0 : opened)} already open${skipped ? `; ${skipped} skipped without a local directory` : ''}.`
+	const left = openable.length - batch.length
+	const skipped = candidates.length - openable.length
+	const summary = `${[
+		`${dryRun ? 'Would open' : 'Opened'} ${batch.length} thread(s) updated in the last ${since}`,
+		`${recent.length - candidates.length} already open`,
+		left && `${left} more on the next sync`,
+		skipped && `${skipped} skipped without a local directory`,
+	]
+		.filter(Boolean)
+		.join('; ')}.`
 	console.log(summary)
 	notify('Amp threads synced', summary)
 }
@@ -214,14 +226,24 @@ function herdrPlugin() {
 	return herdr(undefined, 'plugin', 'list', '--json').plugins.find((plugin) => plugin.plugin_id === PLUGIN_ID)
 }
 
+// The Herdr plugin's build and startup hooks pass --amp-only.
 function install(ampOnly) {
-	const changed = installAmpPlugin()
 	if (ampOnly) {
-		if (changed) console.log(`Updated ${AMP_PLUGIN_TARGET}`)
+		if (installAmpPlugin()) console.log(`Updated ${AMP_PLUGIN_TARGET}`)
 		return
 	}
+	const plugin = herdrPlugin()
+	// A copy from `herdr plugin install` keeps the Amp plugin current through its
+	// hooks; installing a second copy would make the two overwrite each other.
+	if (plugin?.source?.kind === 'github') {
+		return console.log(`Herdr already manages amp-herdr (${plugin.plugin_root}); nothing to install.`)
+	}
+	installAmpPlugin()
 	console.log(`Amp plugin: ${AMP_PLUGIN_TARGET}`)
-	if (herdrPlugin()?.source?.kind !== 'github') {
+	// Herdr stores the resolved path, which a package upgrade replaces, and rereads
+	// the manifest there on start. Relink only when that path changed: linking
+	// also re-enables a plugin the user disabled.
+	if (plugin?.plugin_root !== ROOT) {
 		herdr(undefined, 'plugin', 'link', ROOT)
 		console.log(`Herdr plugin: linked ${ROOT}`)
 	}
@@ -263,38 +285,68 @@ function status() {
 	}
 }
 
-// Exit status 1 means no children. Any failure to check counts as busy.
-function hasChildProcess(pid) {
-	const result =
+// The same shell names Herdr recognises (is_pane_shell_process_name).
+const SHELL = /^-?(sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|elvish|xonsh|nu|pwsh|powershell|cmd)(\.exe)?$/i
+const isShell = (name = '') => SHELL.test(name)
+
+// Every process's children and name, read once per check. A failure stops the
+// command, so a pane is never judged without this information.
+function processTable() {
+	const output =
 		process.platform === 'win32'
-			? spawnSync('powershell', [
+			? run('powershell', [
 					'-NoProfile',
 					'-Command',
-					`if (Get-CimInstance Win32_Process -Filter 'ParentProcessId=${Number(pid)}') { exit 0 } else { exit 1 }`,
+					'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }',
 				])
-			: spawnSync('pgrep', ['-P', String(Number(pid))])
-	return result.status !== 1
+			: run('ps', ['-A', '-o', 'pid=,ppid=,comm='])
+	const children = new Map()
+	const names = new Map()
+	for (const line of output.trim().split(/\r?\n/)) {
+		const [pid, ppid, ...name] = line.trim().split(/\s+/)
+		names.set(Number(pid), name.join(' ').split(/[\\/]/).pop())
+		children.set(Number(ppid), [...(children.get(Number(ppid)) ?? []), Number(pid)])
+	}
+	return { children, names }
 }
 
 // Stopping a session kills every process in its panes, including suspended and
-// background jobs. A pane survives only when it is an idle shell, or an idle
-// agent that Herdr resumes natively or through an Amp thread report. On
-// Windows, Herdr reports the shell as the foreground process unless an agent
-// runs, so the child-process check is what catches a running command there.
+// background jobs. A pane survives only when it is an idle shell with no other
+// processes, or an idle agent that Herdr resumes natively or through an Amp
+// thread report and that runs nothing else beside it.
 function blockers(session) {
+	const { children, names } = processTable()
 	const reasons = []
 	for (const pane of herdr(session, 'pane', 'list').panes) {
 		const where = `${pane.pane_id} (${pane.cwd ?? 'unknown directory'})`
 		const resumable = pane.agent_session || ampThread(pane)
-		if (resumable) {
-			if (!['idle', 'done'].includes(pane.agent_status)) reasons.push(`${where}: ${pane.agent} is ${pane.agent_status}`)
+		if (resumable && !['idle', 'done'].includes(pane.agent_status)) {
+			reasons.push(`${where}: ${pane.agent} is ${pane.agent_status}`)
 			continue
 		}
 		const info = herdr(session, 'pane', 'process-info', '--pane', pane.pane_id).process_info
 		if (!info.shell_pid) continue // the pane's process has already exited
-		if (info.foreground_process_group_id === info.shell_pid && !hasChildProcess(info.shell_pid)) continue
-		const names = [...new Set(info.foreground_processes.map((process) => process.name))].join(', ')
-		reasons.push(`${where} is running ${names || 'a job Herdr cannot inspect'}`)
+		const foreground = info.foreground_processes ?? [] // Herdr omits an empty list
+		let shell = info.shell_pid
+		// Herdr looks through a Scoop-style shim that runs one shell, and so do we.
+		const [only, ...more] = children.get(shell) ?? []
+		if (process.platform === 'win32' && only && !more.length && isShell(names.get(only))) shell = only
+		// Children of the shell outside the foreground are background or suspended jobs.
+		const jobs = (children.get(shell) ?? []).filter((pid) => !foreground.some((process) => process.pid === pid))
+		if (resumable) {
+			// shortcut: Windows has no foreground process group, so a job there cannot
+			// be told apart from the agent; idle agents on Windows are trusted.
+			if (process.platform === 'win32' || jobs.length === 0) continue
+		} else if (
+			[info.shell_pid, shell].includes(info.foreground_process_group_id) &&
+			foreground.length > 0 &&
+			foreground.every((process) => isShell(process.name)) &&
+			jobs.length === 0
+		) {
+			continue
+		}
+		const running = [...new Set([...foreground.map((process) => process.name), ...jobs.map((pid) => names.get(pid))])]
+		reasons.push(`${where} is running ${running.join(', ') || 'a job Herdr cannot inspect'}`)
 	}
 	return reasons
 }
@@ -302,7 +354,10 @@ function blockers(session) {
 async function upgrade(name, yes) {
 	const sessions = runningSessions().filter((session) => !name || session.name === name)
 	if (name && sessions.length === 0) fail(`Herdr session ${name} is not running`)
-	const installed = herdr(undefined, 'status', 'client', '--json').version
+	// HERDR_BIN_PATH can name the binary an old server started from, so ask the
+	// herdr on PATH which version is installed now.
+	const client = JSON.parse(run('herdr', ['status', 'client', '--json']))
+	const installed = (client.result ?? client).version
 	const plan = []
 	let blocked = false
 	for (const session of sessions) {
