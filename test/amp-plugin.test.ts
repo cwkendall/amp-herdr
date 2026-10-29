@@ -27,7 +27,12 @@ function observable<T>(initial: T) {
 }
 
 async function startHerdr() {
-	const socketPath = join(mkdtempSync(join(tmpdir(), 'amp-herdr-')), 'herdr.sock')
+	// Herdr passes a pipe name on Windows, which the plugin turns into \\.\pipe\<name>.
+	const socketPath =
+		process.platform === 'win32'
+			? `amp-herdr-test-${process.pid}-${Math.random().toString(36).slice(2)}`
+			: join(mkdtempSync(join(tmpdir(), 'amp-herdr-')), 'herdr.sock')
+	const listenPath = process.platform === 'win32' ? `\\\\.\\pipe\\${socketPath}` : socketPath
 	const requests: any[] = []
 	const server = net.createServer((socket) => {
 		socket.on('data', (data) => {
@@ -38,7 +43,7 @@ async function startHerdr() {
 			}
 		})
 	})
-	await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+	await new Promise<void>((resolve) => server.listen(listenPath, resolve))
 	return { socketPath, requests, close: () => server.close() }
 }
 

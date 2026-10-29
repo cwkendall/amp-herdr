@@ -20,27 +20,38 @@ It works with any Amp deployment, including self-hosted tenancies: it runs the
 - Herdr 0.9.2 or later
 - Amp CLI with plugin support
 - Node.js 22.18 or later
+- macOS, Linux, or Windows
 
 ## Install
 
-From Herdr:
+Choose one way to install. Each sets up the Amp plugin and the Herdr plugin.
 
-```bash
-herdr plugin install cwkendall/amp-herdr
-```
+### With a package manager
 
-This installs the Amp plugin into `~/.config/amp/plugins/`, registers the
-Herdr plugin, and adds an `amp-herdr` launcher to `~/.local/bin` unless one is
-already on your `PATH`. `herdr plugin update` keeps all three current.
-
-From Homebrew or a checkout:
+The package puts the `amp-herdr` command on your `PATH`. Run its `install`
+command once to set up both plugins:
 
 ```bash
 amp-herdr install
 ```
 
-Restart running Amp sessions, or run `plugins: reload` in each, to start
-reporting. Check the result with `amp-herdr status`.
+Update the package with its manager, then run `amp-herdr install` again to
+refresh the Amp plugin. The Herdr plugin links to the installed package, so it
+updates with it.
+
+### From Herdr
+
+```bash
+herdr plugin install cwkendall/amp-herdr
+```
+
+Herdr installs the Amp plugin and registers the Herdr plugin, but it does not
+put plugin commands on your `PATH`. Use the Herdr actions below, or install the
+package as well for the `amp-herdr` command. Update with
+`herdr plugin update amp-herdr`.
+
+After either install, restart running Amp sessions, or run `plugins: reload` in
+each, to start reporting. Check the result with `amp-herdr status`.
 
 ## Use
 
@@ -83,8 +94,9 @@ workspace.
 ### Upgrading Herdr with a package manager
 
 Herdr's live handoff keeps panes running across updates, but only for its own
-installer. Homebrew, mise, and Nix updates leave old servers running until they
-stop. After such an update, run:
+installer and only on macOS and Linux. Homebrew, mise, and Nix updates, and
+every Windows update, leave old servers running until they stop. After such an
+update, run:
 
 ```bash
 amp-herdr upgrade

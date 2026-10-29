@@ -3,7 +3,7 @@
 // in Herdr, and restarts outdated Herdr sessions without losing Amp threads.
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
@@ -21,9 +21,7 @@ const AMP_PLUGIN_TARGET = join(
 	'plugins',
 	'amp-herdr.ts',
 )
-// Herdr does not put plugin commands on PATH, so install adds this launcher.
-const LAUNCHER = join(homedir(), '.local', 'bin', 'amp-herdr')
-const MANAGED_MARKER = 'managed by amp-herdr'
+const MANAGED_MARKER = '// managed by amp-herdr'
 const THREAD_ID = /^T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const USAGE = `Usage: amp-herdr <command> [options]
@@ -48,7 +46,11 @@ function fail(message) {
 }
 
 function run(command, args) {
-	const result = spawnSync(command, args, { encoding: 'utf8' })
+	// On Windows, amp is a .cmd shim, which Node runs only through a shell; herdr
+	// is a real executable. Amp only ever receives fixed flags, numbers, and
+	// validated thread IDs, so nothing here needs shell quoting.
+	const shell = process.platform === 'win32' && command === 'amp'
+	const result = spawnSync(command, args, { encoding: 'utf8', shell })
 	if (result.error) fail(`cannot run ${command}: ${result.error.message}`)
 	if (result.status !== 0) {
 		const output = (result.stderr || result.stdout).trim()
@@ -74,7 +76,7 @@ function herdr(session, ...args) {
 // Plugin actions run without a terminal, so they report through Herdr instead.
 function notify(title, body) {
 	if (!process.env.HERDR_PLUGIN_ID) return
-	spawnSync(process.env.HERDR_BIN_PATH || 'herdr', ['notification', 'show', title, '--body', body])
+	spawnSync(process.env.HERDR_BIN_PATH, ['notification', 'show', title, '--body', body])
 }
 
 function threadCwd(thread) {
@@ -208,39 +210,12 @@ function installAmpPlugin() {
 	return true
 }
 
-function onPath(name) {
-	return (process.env.PATH ?? '')
-		.split(':')
-		.map((dir) => join(dir, name))
-		.find((path) => existsSync(path))
-}
-
-function managed(path) {
-	return existsSync(path) && readFileSync(path, 'utf8').includes(MANAGED_MARKER)
-}
-
-// Rewritten on every install and update, so it follows Herdr's current checkout.
-function installLauncher() {
-	const found = onPath('amp-herdr')
-	if (found && found !== LAUNCHER) return // already provided, for example by Homebrew
-	if (existsSync(LAUNCHER) && !managed(LAUNCHER)) return
-	const entry = join(ROOT, 'bin', 'amp-herdr')
-	writeFileSync(
-		LAUNCHER,
-		`#!/bin/sh\n# ${MANAGED_MARKER}\n[ -f '${entry}' ] || { echo 'amp-herdr is no longer installed; remove ${LAUNCHER}' >&2; exit 1; }\nexec node '${entry}' "$@"\n`,
-		{ mode: 0o755 },
-	)
-	if (!found) console.log(`Installed ${LAUNCHER}; add ${dirname(LAUNCHER)} to PATH to run amp-herdr directly.`)
-}
-
 function herdrPlugin() {
 	return herdr(undefined, 'plugin', 'list', '--json').plugins.find((plugin) => plugin.plugin_id === PLUGIN_ID)
 }
 
 function install(ampOnly) {
 	const changed = installAmpPlugin()
-	mkdirSync(dirname(LAUNCHER), { recursive: true })
-	installLauncher()
 	if (ampOnly) {
 		if (changed) console.log(`Updated ${AMP_PLUGIN_TARGET}`)
 		return
@@ -254,10 +229,9 @@ function install(ampOnly) {
 }
 
 function uninstall() {
-	for (const path of [AMP_PLUGIN_TARGET, LAUNCHER]) {
-		if (!managed(path)) continue
-		rmSync(path)
-		console.log(`Removed ${path}`)
+	if (existsSync(AMP_PLUGIN_TARGET) && readFileSync(AMP_PLUGIN_TARGET, 'utf8').includes(MANAGED_MARKER)) {
+		rmSync(AMP_PLUGIN_TARGET)
+		console.log(`Removed ${AMP_PLUGIN_TARGET}`)
 	}
 	const plugin = herdrPlugin()
 	if (plugin?.source?.kind === 'local') {
@@ -289,13 +263,24 @@ function status() {
 	}
 }
 
+// Exit status 1 means no children. Any failure to check counts as busy.
 function hasChildProcess(pid) {
-	return spawnSync('pgrep', ['-P', String(pid)]).status === 0
+	const result =
+		process.platform === 'win32'
+			? spawnSync('powershell', [
+					'-NoProfile',
+					'-Command',
+					`if (Get-CimInstance Win32_Process -Filter 'ParentProcessId=${Number(pid)}') { exit 0 } else { exit 1 }`,
+				])
+			: spawnSync('pgrep', ['-P', String(Number(pid))])
+	return result.status !== 1
 }
 
 // Stopping a session kills every process in its panes, including suspended and
 // background jobs. A pane survives only when it is an idle shell, or an idle
-// agent that Herdr resumes natively or through an Amp thread report.
+// agent that Herdr resumes natively or through an Amp thread report. On
+// Windows, Herdr reports the shell as the foreground process unless an agent
+// runs, so the child-process check is what catches a running command there.
 function blockers(session) {
 	const reasons = []
 	for (const pane of herdr(session, 'pane', 'list').panes) {
