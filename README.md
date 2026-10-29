@@ -138,6 +138,25 @@ herdr plugin link .   # use this checkout as the Herdr plugin
 Test end to end in a separate named session such as
 `herdr --session amp-herdr-test`, so a restart does not affect your work.
 
+## Releasing
+
+Release every user-visible change. Use [semantic versioning](https://semver.org):
+patch for fixes, minor for features, and major for breaking changes.
+
+```bash
+npm version patch   # or minor, major
+git push --follow-tags
+```
+
+`npm version` runs the tests, sets the version in `package.json` and
+`herdr-plugin.toml`, commits, and tags `vX.Y.Z`. Pushing the tag publishes a
+GitHub release with generated notes. Then update the version and checksum in
+the Homebrew formula and Scoop manifest.
+
+`herdr plugin update` installs the newest commit of the ref the plugin was
+installed from (the default branch unless `--ref` was given) and ignores the
+version. To pin a release, use `herdr plugin install cwkendall/amp-herdr --ref vX.Y.Z`.
+
 ## License
 
 Apache-2.0

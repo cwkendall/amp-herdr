@@ -10,6 +10,14 @@ const test = (name: string, fn: () => void) => baseTest(name, { skip: process.pl
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'amp-herdr')
 
+// Herdr shows the manifest version; the CLI and `npm version` use package.json.
+baseTest('the Herdr manifest and package.json declare the same version', () => {
+	const root = join(import.meta.dirname, '..')
+	const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+	const manifest = readFileSync(join(root, 'herdr-plugin.toml'), 'utf8')
+	assert.equal(manifest.match(/^version = "(.*)"$/m)?.[1], version)
+})
+
 // Fake herdr and amp executables answer from a JSON world and log every call.
 // The fakes are shebang scripts. On Windows, herdr is a real .exe that Node
 // starts without a shell, which a script cannot stand in for, so these tests
